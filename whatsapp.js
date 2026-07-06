@@ -1,6 +1,7 @@
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+const pino = require('pino');
 
 let sock = null;
 let qrCodeData = null;
@@ -8,16 +9,61 @@ let isReady = false;
 let statusText = 'Не подключён';
 let onStatusChange = null;
 let reconnectTimer = null;
-let saveCreds = null;
+let saveCredsRef = null;
 
 const SESSION_DIR = path.join(__dirname, 'wa-session');
 
 function getStatus() {
-    return { ready: isReady, status: statusText, qr: qrCodeData };
+    return {
+        ready: isReady,
+        status: statusText,
+        qr: qrCodeData
+    };
 }
 
 function notify() {
     if (onStatusChange) onStatusChange(getStatus());
+}
+
+async function loadBaileys() {
+    const mod = await import('@whiskeysockets/baileys');
+
+    const merged = {
+        ...mod,
+        ...(mod.default && typeof mod.default === 'object' ? mod.default : {})
+    };
+
+    const makeWASocket =
+        typeof mod.default === 'function'
+            ? mod.default
+            : (typeof merged.makeWASocket === 'function' ? merged.makeWASocket : null);
+
+    const useMultiFileAuthState = merged.useMultiFileAuthState;
+    const DisconnectReason = merged.DisconnectReason;
+    const fetchLatestBaileysVersion = merged.fetchLatestBaileysVersion;
+    const makeCacheableSignalKeyStore = merged.makeCacheableSignalKeyStore;
+
+    if (
+        !makeWASocket ||
+        !useMultiFileAuthState ||
+        !DisconnectReason ||
+        !fetchLatestBaileysVersion ||
+        !makeCacheableSignalKeyStore
+    ) {
+        console.log('Baileys exports:', Object.keys(mod));
+        if (mod.default && typeof mod.default === 'object') {
+            console.log('Baileys default exports:', Object.keys(mod.default));
+        }
+        throw new Error('Не удалось получить makeWASocket из @whiskeysockets/baileys');
+    }
+
+    return {
+        makeWASocket,
+        useMultiFileAuthState,
+        DisconnectReason,
+        fetchLatestBaileysVersion,
+        makeCacheableSignalKeyStore
+    };
 }
 
 async function initialize(statusCallback) {
@@ -38,71 +84,65 @@ async function initialize(statusCallback) {
 
 async function connect() {
     try {
-        // Динамический import для ESM модуля
-        const baileys = await import('@whiskeysockets/baileys');
-
-        const makeWASocket = baileys.default;
         const {
+            makeWASocket,
             useMultiFileAuthState,
             DisconnectReason,
             fetchLatestBaileysVersion,
             makeCacheableSignalKeyStore
-        } = baileys;
-
-        const pino = require('pino');
+        } = await loadBaileys();
 
         if (!fs.existsSync(SESSION_DIR)) {
             fs.mkdirSync(SESSION_DIR, { recursive: true });
         }
 
-        const { state, saveCreds: sc } = await useMultiFileAuthState(SESSION_DIR);
-        saveCreds = sc;
+        const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+        saveCredsRef = saveCreds;
 
         const { version } = await fetchLatestBaileysVersion();
-        console.log('WA версия:', version.join('.'));
+        console.log('WA version:', version.join('.'));
 
         sock = makeWASocket({
             version,
             auth: {
                 creds: state.creds,
-                keys: makeCacheableSignalKeyStore(
-                    state.keys,
-                    pino({ level: 'silent' })
-                ),
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
             },
-            printQRInTerminal: true,
             logger: pino({ level: 'silent' }),
+            printQRInTerminal: true,
             browser: ['WA Sender', 'Chrome', '1.0.0'],
             connectTimeoutMs: 60000,
-            generateHighQualityLinkPreview: false,
             syncFullHistory: false,
+            generateHighQualityLinkPreview: false
         });
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
-                console.log('QR получен — сканируйте в WhatsApp!');
+                console.log('QR получен — сканируйте в WhatsApp');
                 statusText = 'Сканируйте QR-код';
                 isReady = false;
+
                 try {
                     qrCodeData = await QRCode.toDataURL(qr);
                 } catch (e) {
-                    console.error('QR ошибка:', e.message);
+                    console.error('Ошибка генерации QR:', e.message);
                 }
-                notify();
-            }
 
-            if (connection === 'open') {
-                console.log('✅ WhatsApp подключён!');
-                isReady = true;
-                qrCodeData = null;
-                statusText = 'Подключён ✓';
                 notify();
             }
 
             if (connection === 'connecting') {
                 statusText = 'Подключение...';
+                notify();
+            }
+
+            if (connection === 'open') {
+                console.log('✅ WhatsApp подключён');
+                isReady = true;
+                qrCodeData = null;
+                statusText = 'Подключён ✓';
                 notify();
             }
 
@@ -114,7 +154,7 @@ async function connect() {
                 console.log('Соединение закрыто, код:', code);
 
                 if (code === DisconnectReason.loggedOut) {
-                    statusText = 'Вышли из аккаунта — нужен новый QR';
+                    statusText = 'Выполнен выход — нужен новый QR';
                     clearSession();
                     notify();
                 } else {
@@ -125,8 +165,12 @@ async function connect() {
             }
         });
 
-        sock.ev.on('creds.update', () => {
-            if (saveCreds) saveCreds();
+        sock.ev.on('creds.update', async () => {
+            try {
+                if (saveCredsRef) await saveCredsRef();
+            } catch (e) {
+                console.error('Ошибка сохранения сессии:', e.message);
+            }
         });
 
     } catch (err) {
@@ -143,25 +187,23 @@ async function sendMessage(phone, message) {
     }
 
     let number = phone.replace(/[^\d]/g, '');
-
-    // Убираем ведущие нули
     if (number.startsWith('00')) {
         number = number.substring(2);
     }
 
     try {
-        const [result] = await sock.onWhatsApp(number);
+        const result = await sock.onWhatsApp(number);
+        const found = Array.isArray(result) ? result[0] : null;
 
-        if (!result || !result.exists) {
-            throw new Error('Номер ' + phone + ' не найден в WhatsApp');
+        if (!found || !found.exists) {
+            throw new Error('Номер не найден в WhatsApp');
         }
 
-        await sock.sendMessage(result.jid, { text: message });
+        await sock.sendMessage(found.jid, { text: message });
         console.log('✓ Отправлено:', phone);
         return true;
-
     } catch (e) {
-        throw new Error('Ошибка отправки на ' + phone + ': ' + e.message);
+        throw new Error(`Ошибка отправки на ${phone}: ${e.message}`);
     }
 }
 
@@ -171,12 +213,13 @@ async function logout() {
         reconnectTimer = null;
     }
 
-    if (sock) {
-        try { await sock.logout(); } catch (e) {}
-        try { sock.end(); } catch (e) {}
-        sock = null;
-    }
+    try {
+        if (sock && typeof sock.logout === 'function') {
+            await sock.logout();
+        }
+    } catch (e) {}
 
+    sock = null;
     isReady = false;
     qrCodeData = null;
     statusText = 'Не подключён';
