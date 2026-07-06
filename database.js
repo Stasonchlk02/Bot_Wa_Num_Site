@@ -2,28 +2,41 @@ const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, 'contacts.db');
+// На Railway данные хранятся в /app/data
+// Локально — в папке проекта
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
+    ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH)
+    : path.join(__dirname, 'data');
+
+const DB_PATH = path.join(DATA_DIR, 'contacts.db');
+
 let db = null;
 
 async function initDB() {
+    // Создаём папку если нет
+    if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+        console.log('Папка данных создана:', DATA_DIR);
+    }
+
     const SQL = await initSqlJs();
 
     if (fs.existsSync(DB_PATH)) {
         const buffer = fs.readFileSync(DB_PATH);
         db = new SQL.Database(buffer);
-        console.log('БД загружена из файла');
+        console.log('БД загружена:', DB_PATH);
     } else {
         db = new SQL.Database();
-        console.log('БД создана заново');
+        console.log('БД создана:', DB_PATH);
     }
 
     db.run(`
         CREATE TABLE IF NOT EXISTS contacts (
-                                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                name TEXT NOT NULL,
-                                                phone TEXT NOT NULL,
-                                                group_name TEXT DEFAULT 'Общая',
-                                                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            group_name TEXT DEFAULT 'Общая',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     `);
     db.run(`
@@ -56,16 +69,19 @@ async function initDB() {
     }
 
     save();
-    console.log('БД готова');
+    console.log('БД готова ✓');
     return db;
 }
 
 function save() {
     try {
+        if (!fs.existsSync(DATA_DIR)) {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+        }
         const data = db.export();
         fs.writeFileSync(DB_PATH, Buffer.from(data));
     } catch (e) {
-        console.error('Ошибка сохранения:', e.message);
+        console.error('Ошибка сохранения БД:', e.message);
     }
 }
 
