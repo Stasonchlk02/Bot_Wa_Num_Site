@@ -11,14 +11,15 @@ let onStatusChange = null;
 let reconnectTimer = null;
 let saveCredsRef = null;
 
-const SESSION_DIR = path.join(__dirname, 'wa-session');
+// Папка сессии — на Railway Volume, локально — в папке проекта
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
+    ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH)
+    : path.join(__dirname, 'data');
+
+const SESSION_DIR = path.join(DATA_DIR, 'wa-session');
 
 function getStatus() {
-    return {
-        ready: isReady,
-        status: statusText,
-        qr: qrCodeData
-    };
+    return { ready: isReady, status: statusText, qr: qrCodeData };
 }
 
 function notify() {
@@ -43,18 +44,8 @@ async function loadBaileys() {
     const fetchLatestBaileysVersion = merged.fetchLatestBaileysVersion;
     const makeCacheableSignalKeyStore = merged.makeCacheableSignalKeyStore;
 
-    if (
-        !makeWASocket ||
-        !useMultiFileAuthState ||
-        !DisconnectReason ||
-        !fetchLatestBaileysVersion ||
-        !makeCacheableSignalKeyStore
-    ) {
-        console.log('Baileys exports:', Object.keys(mod));
-        if (mod.default && typeof mod.default === 'object') {
-            console.log('Baileys default exports:', Object.keys(mod.default));
-        }
-        throw new Error('Не удалось получить makeWASocket из @whiskeysockets/baileys');
+    if (!makeWASocket || !useMultiFileAuthState || !DisconnectReason) {
+        throw new Error('Не удалось загрузить baileys');
     }
 
     return {
@@ -92,9 +83,15 @@ async function connect() {
             makeCacheableSignalKeyStore
         } = await loadBaileys();
 
+        // Создаём папки
+        if (!fs.existsSync(DATA_DIR)) {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+        }
         if (!fs.existsSync(SESSION_DIR)) {
             fs.mkdirSync(SESSION_DIR, { recursive: true });
         }
+
+        console.log('Сессия хранится в:', SESSION_DIR);
 
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
         saveCredsRef = saveCreds;
@@ -120,16 +117,14 @@ async function connect() {
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
-                console.log('QR получен — сканируйте в WhatsApp');
+                console.log('QR получен — сканируйте!');
                 statusText = 'Сканируйте QR-код';
                 isReady = false;
-
                 try {
                     qrCodeData = await QRCode.toDataURL(qr);
                 } catch (e) {
-                    console.error('Ошибка генерации QR:', e.message);
+                    console.error('QR error:', e.message);
                 }
-
                 notify();
             }
 
@@ -139,7 +134,7 @@ async function connect() {
             }
 
             if (connection === 'open') {
-                console.log('✅ WhatsApp подключён');
+                console.log('✅ WhatsApp подключён!');
                 isReady = true;
                 qrCodeData = null;
                 statusText = 'Подключён ✓';
@@ -154,7 +149,7 @@ async function connect() {
                 console.log('Соединение закрыто, код:', code);
 
                 if (code === DisconnectReason.loggedOut) {
-                    statusText = 'Выполнен выход — нужен новый QR';
+                    statusText = 'Выход — нужен новый QR';
                     clearSession();
                     notify();
                 } else {
@@ -187,23 +182,21 @@ async function sendMessage(phone, message) {
     }
 
     let number = phone.replace(/[^\d]/g, '');
-    if (number.startsWith('00')) {
-        number = number.substring(2);
-    }
+    if (number.startsWith('00')) number = number.substring(2);
 
     try {
         const result = await sock.onWhatsApp(number);
         const found = Array.isArray(result) ? result[0] : null;
 
         if (!found || !found.exists) {
-            throw new Error('Номер не найден в WhatsApp');
+            throw new Error('Номер ' + phone + ' не найден в WhatsApp');
         }
 
         await sock.sendMessage(found.jid, { text: message });
         console.log('✓ Отправлено:', phone);
         return true;
     } catch (e) {
-        throw new Error(`Ошибка отправки на ${phone}: ${e.message}`);
+        throw new Error('Ошибка отправки ' + phone + ': ' + e.message);
     }
 }
 
@@ -214,9 +207,7 @@ async function logout() {
     }
 
     try {
-        if (sock && typeof sock.logout === 'function') {
-            await sock.logout();
-        }
+        if (sock) await sock.logout();
     } catch (e) {}
 
     sock = null;
