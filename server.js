@@ -351,6 +351,24 @@ function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
 }
 
+function startSelfPing() {
+    const url = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    
+    setInterval(async () => {
+        try {
+            const http = require('http');
+            const https = require('https');
+            const client = url.startsWith('https') ? https : http;
+            
+            client.get(url + '/ping', (res) => {
+                console.log('Self-ping:', res.statusCode, new Date().toLocaleString('ru-RU'));
+            }).on('error', () => {});
+        } catch (e) {}
+    }, 14 * 60 * 1000); // каждые 14 минут
+    
+    console.log('Self-ping запущен каждые 14 минут');
+}
+
 // ============ ЗАПУСК ============
 
 initDB().then(() => {
@@ -361,5 +379,10 @@ initDB().then(() => {
         console.log('║   http://localhost:' + PORT + '            ║');
         console.log('╚═══════════════════════════════════╝');
         console.log('');
+        
+        // Запускаем самопинг только на Render
+        if (process.env.RENDER) {
+            startSelfPing();
+        }
     });
 });
