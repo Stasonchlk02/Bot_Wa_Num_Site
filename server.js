@@ -1,14 +1,14 @@
 const express = require('express');
 const path = require('path');
+const cors = require('cors');
 const { initDB, all, getOne, run } = require('./database');
 const whatsapp = require('./whatsapp');
-
-const cors = require('cors');
-app.use(cors());
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ============ CORS ============
+app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -341,6 +341,11 @@ app.get('/api/stats', (req, res) => {
     }
 });
 
+// ============ ПИНГ (для предотвращения засыпания) ============
+app.get('/ping', (req, res) => {
+    res.send('pong');
+});
+
 // ============ УТИЛИТЫ ============
 
 function normalizePhone(phone) {
@@ -375,6 +380,16 @@ function startSelfPing() {
 // ============ ЗАПУСК ============
 
 initDB().then(() => {
+    // ====== СОЗДАЁМ ГРУППУ ДЛЯ ЗАЯВОК ======
+    const defaultGroups = ['Общая', 'Заявки BARCRAFT'];
+    for (const g of defaultGroups) {
+        const exists = getOne('SELECT id FROM groups WHERE name = ?', [g]);
+        if (!exists) {
+            run('INSERT INTO groups (name, color) VALUES (?, ?)', [g, '#25D366']);
+            console.log('➕ Создана группа:', g);
+        }
+    }
+
     app.listen(PORT, () => {
         console.log('');
         console.log('╔═══════════════════════════════════╗');
@@ -389,12 +404,3 @@ initDB().then(() => {
         }
     });
 });
-
-// Создаём группу для заявок, если её нет
-const defaultGroups = ['Общая', 'Заявки BARCRAFT'];
-for (const g of defaultGroups) {
-    const exists = getOne('SELECT id FROM groups WHERE name = ?', [g]);
-    if (!exists) {
-        run('INSERT INTO groups (name, color) VALUES (?, ?)', [g, '#25D366']);
-    }
-}
