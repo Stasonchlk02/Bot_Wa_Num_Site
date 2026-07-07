@@ -3,6 +3,9 @@ const path = require('path');
 const { initDB, all, getOne, run } = require('./database');
 const whatsapp = require('./whatsapp');
 
+const cors = require('cors');
+app.use(cors());
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -386,3 +389,12 @@ initDB().then(() => {
         }
     });
 });
+
+// Создаём группу для заявок, если её нет
+const defaultGroups = ['Общая', 'Заявки BARCRAFT'];
+for (const g of defaultGroups) {
+    const exists = getOne('SELECT id FROM groups WHERE name = ?', [g]);
+    if (!exists) {
+        run('INSERT INTO groups (name, color) VALUES (?, ?)', [g, '#25D366']);
+    }
+}
