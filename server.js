@@ -404,3 +404,10 @@ initDB().then(() => {
         }
     });
 });
+
+// Автоматически подключаем WhatsApp при старте
+setTimeout(() => {
+    whatsapp.initialize((status) => {
+        console.log('WhatsApp статус:', status.status);
+    });
+}, 3000);
